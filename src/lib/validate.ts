@@ -2,7 +2,7 @@ import type { ErrorCode } from "@/types/analysis";
 
 export const INPUT_LIMITS = {
   MIN_CHARS: 80,       // Enough to form a real policy sentence
-  MAX_CHARS: 25_000,   // ~10 pages of dense legal text — keeps token costs sane
+  MAX_CHARS: 60_000,   // Allows longer bills while staying within practical latency/cost bounds
 } as const;
 
 export interface ValidationResult {

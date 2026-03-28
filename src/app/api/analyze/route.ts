@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import { NextRequest, NextResponse } from "next/server";
 import { validatePolicyInput } from "@/lib/validate";
 import { analyzePolicy } from "@/lib/openai";
@@ -54,12 +55,38 @@ export async function POST(req: NextRequest): Promise<NextResponse<AnalyzeRespon
   } catch (err) {
     console.error("[BillBridge] OpenAI error:", err);
 
+    if (err instanceof Error && err.name === "ConfigurationError") {
+      return errorResponse(
+        "The analysis service is not configured. Add OPENAI_API_KEY in your Vercel project environment variables and redeploy.",
+        "SERVER_ERROR",
+        500
+      );
+    }
+
     if (err instanceof Error && err.name === "ParseError") {
       return errorResponse(
         "The analysis model returned an unexpected response. Please try again.",
         "PARSE_ERROR",
         502
       );
+    }
+
+    if (err instanceof OpenAI.APIError) {
+      if (err.status === 401 || err.status === 403) {
+        return errorResponse(
+          "The analysis service could not authenticate with OpenAI. Check the OPENAI_API_KEY value in Vercel and redeploy.",
+          "SERVER_ERROR",
+          502
+        );
+      }
+
+      if (err.status === 429) {
+        return errorResponse(
+          "OpenAI is rate limiting the analysis service right now. Please wait a moment and try again.",
+          "RATE_LIMITED",
+          429
+        );
+      }
     }
 
     return errorResponse(

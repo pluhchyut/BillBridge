@@ -8,7 +8,9 @@ let _client: OpenAI | null = null;
 function getClient(): OpenAI {
   if (!_client) {
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("OPENAI_API_KEY environment variable is not set.");
+    if (!apiKey) {
+      throw new ConfigurationError("OPENAI_API_KEY environment variable is not set.");
+    }
     _client = new OpenAI({ apiKey });
   }
   return _client;
@@ -102,6 +104,13 @@ class ParseError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ParseError";
+  }
+}
+
+class ConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigurationError";
   }
 }
 
