@@ -3,7 +3,7 @@ import { validatePolicyInput } from "@/lib/validate";
 import { analyzePolicy } from "@/lib/openai";
 import { computeComplexity } from "@/lib/complexity";
 import { checkRateLimit, pruneRateLimitStore } from "@/lib/rateLimiter";
-import type { AnalyzeResponse, PolicyAnalysis } from "@/types/analysis";
+import type { AnalyzeResponse, ErrorCode, PolicyAnalysis } from "@/types/analysis";
 
 export const runtime = "nodejs";   // Required for OpenAI SDK
 export const maxDuration = 60;     // Vercel Pro allows up to 60s; Fine for GPT-4o
@@ -111,8 +111,9 @@ export async function GET(): Promise<NextResponse> {
 
 function errorResponse(
   error: string,
-  code: AnalyzeResponse extends { ok: false } ? AnalyzeResponse["code"] : never,
+  code: ErrorCode,
   status: number
 ): NextResponse<AnalyzeResponse> {
-  return NextResponse.json({ ok: false, error, code } as AnalyzeResponse, { status });
+  const body: AnalyzeResponse = { ok: false, error, code };
+  return NextResponse.json(body, { status });
 }
