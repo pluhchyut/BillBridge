@@ -110,3 +110,10 @@ export const MODEL_CONFIG = {
   max_tokens: 2048,
   response_format: { type: "json_object" } as const,
 } as const;
+
+export const FALLBACK_MODEL_CONFIG = {
+  model: "gpt-4o-mini",
+  temperature: 0.2,
+  max_tokens: 1536,
+  response_format: { type: "json_object" } as const,
+} as const;

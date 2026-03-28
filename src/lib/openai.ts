@@ -1,5 +1,10 @@
 import OpenAI from "openai";
-import { SYSTEM_PROMPT, buildUserMessage, MODEL_CONFIG } from "./prompt";
+import {
+  SYSTEM_PROMPT,
+  buildUserMessage,
+  MODEL_CONFIG,
+  FALLBACK_MODEL_CONFIG,
+} from "./prompt";
 import type { RawModelOutput } from "@/types/analysis";
 
 // Singleton client — Vercel reuses warm instances, so this avoids repeated instantiation
@@ -17,47 +22,94 @@ function getClient(): OpenAI {
 }
 
 const REQUIRED_KEYS: (keyof RawModelOutput)[] = [
-  "summary","affectedGroups","keyPoints","pros","cons",
-  "debateFor","debateAgainst","lawmakerQuestions","plainEnglish","simple",
-];
+  "summary",
+  "affectedGroups",
+  "keyPoints",
+  "pros",
+  "cons",
+  "debateFor",
+  "debateAgainst",
+  "lawmakerQuestions",
+  "plainEnglish",
+  "simple",
+] as const;
+
+interface ModelConfig {
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  response_format: { type: "json_object" };
+}
+
+const MODEL_SEQUENCE: ModelConfig[] = [MODEL_CONFIG, FALLBACK_MODEL_CONFIG];
+const MAX_ATTEMPTS_PER_MODEL = 3;
 
 /**
- * Calls the OpenAI API with one automatic retry on transient failures.
+ * Calls OpenAI with backoff and a lighter-model fallback when the primary model is throttled.
  * Returns a validated RawModelOutput or throws a typed Error.
  */
 export async function analyzePolicy(policyText: string): Promise<RawModelOutput> {
   const client = getClient();
+  const messages = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    { role: "user" as const, content: buildUserMessage(policyText) },
+  ];
 
   let lastError: unknown;
+  let sawRateLimit = false;
+  let retryAfterSeconds: number | undefined;
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const response = await client.chat.completions.create({
-        ...MODEL_CONFIG,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user",   content: buildUserMessage(policyText) },
-        ],
-      });
+  for (const modelConfig of MODEL_SEQUENCE) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
+      try {
+        const response = await client.chat.completions.create({
+          ...modelConfig,
+          messages,
+        });
 
-      const raw = response.choices[0]?.message?.content;
-      if (!raw) throw new ParseError("Model returned an empty response.");
+        const raw = response.choices[0]?.message?.content;
+        if (!raw) throw new ParseError("Model returned an empty response.");
 
-      return parseAndValidate(raw);
-    } catch (err) {
-      lastError = err;
+        return parseAndValidate(raw);
+      } catch (err) {
+        lastError = err;
 
-      // Don't retry on parse errors — a second call with the same input won't fix bad JSON
-      if (err instanceof ParseError) throw err;
+        if (err instanceof ParseError) throw err;
 
-      // Don't retry on OpenAI auth/rate-limit errors (4xx)
-      if (err instanceof OpenAI.APIError && err.status && err.status < 500) throw err;
+        if (err instanceof OpenAI.APIError) {
+          if (err.status === 429) {
+            sawRateLimit = true;
+            retryAfterSeconds = getRetryAfterSeconds(err.headers) ?? retryAfterSeconds;
 
-      // Retry only on transient errors (5xx, network timeouts) on the first attempt
-      if (attempt === 2) throw lastError;
+            if (attempt < MAX_ATTEMPTS_PER_MODEL) {
+              await sleep(getRetryDelayMs(err.headers, attempt));
+              continue;
+            }
 
-      await sleep(800);
+            break;
+          }
+
+          if (err.status && err.status < 500) {
+            throw err;
+          }
+        }
+
+        if (attempt === MAX_ATTEMPTS_PER_MODEL) {
+          break;
+        }
+
+        await sleep(800 * attempt);
+      }
     }
+  }
+
+  if (sawRateLimit) {
+    throw new ProviderRateLimitError(
+      retryAfterSeconds
+        ? `OpenAI rate limited the analysis request. Retry after ${retryAfterSeconds} seconds.`
+        : "OpenAI rate limited the analysis request.",
+      retryAfterSeconds
+    );
   }
 
   throw lastError;
@@ -86,10 +138,16 @@ function parseAndValidate(raw: string): RawModelOutput {
     }
   }
 
-  // Ensure array fields are actually arrays with string items
   const arrayFields: (keyof RawModelOutput)[] = [
-    "affectedGroups","keyPoints","pros","cons","debateFor","debateAgainst","lawmakerQuestions",
+    "affectedGroups",
+    "keyPoints",
+    "pros",
+    "cons",
+    "debateFor",
+    "debateAgainst",
+    "lawmakerQuestions",
   ];
+
   for (const field of arrayFields) {
     const val = obj[field];
     if (!Array.isArray(val) || val.length === 0 || typeof val[0] !== "string") {
@@ -98,6 +156,27 @@ function parseAndValidate(raw: string): RawModelOutput {
   }
 
   return obj as unknown as RawModelOutput;
+}
+
+function getRetryAfterSeconds(headers: Record<string, string> | undefined): number | undefined {
+  const rawValue = headers?.["retry-after"] ?? headers?.["Retry-After"];
+  if (!rawValue) return undefined;
+
+  const parsed = Number(rawValue);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.ceil(parsed);
+  }
+
+  return undefined;
+}
+
+function getRetryDelayMs(headers: Record<string, string> | undefined, attempt: number): number {
+  const retryAfterSeconds = getRetryAfterSeconds(headers);
+  if (retryAfterSeconds) {
+    return retryAfterSeconds * 1000;
+  }
+
+  return 1000 * Math.pow(2, attempt - 1);
 }
 
 class ParseError extends Error {
@@ -111,6 +190,16 @@ class ConfigurationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ConfigurationError";
+  }
+}
+
+class ProviderRateLimitError extends Error {
+  readonly retryAfterSeconds?: number;
+
+  constructor(message: string, retryAfterSeconds?: number) {
+    super(message);
+    this.name = "ProviderRateLimitError";
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 

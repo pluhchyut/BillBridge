@@ -71,6 +71,20 @@ export async function POST(req: NextRequest): Promise<NextResponse<AnalyzeRespon
       );
     }
 
+    if (err instanceof Error && err.name === "ProviderRateLimitError") {
+      const retryAfterSeconds =
+        "retryAfterSeconds" in err && typeof err.retryAfterSeconds === "number"
+          ? err.retryAfterSeconds
+          : 20;
+
+      return errorResponse(
+        `OpenAI is rate limiting the analysis service right now. Please wait about ${retryAfterSeconds} seconds and try again.`,
+        "RATE_LIMITED",
+        429,
+        { "Retry-After": String(retryAfterSeconds) }
+      );
+    }
+
     if (err instanceof OpenAI.APIError) {
       if (err.status === 401 || err.status === 403) {
         return errorResponse(
@@ -139,8 +153,9 @@ export async function GET(): Promise<NextResponse> {
 function errorResponse(
   error: string,
   code: ErrorCode,
-  status: number
+  status: number,
+  headers?: Record<string, string>
 ): NextResponse<AnalyzeResponse> {
   const body: AnalyzeResponse = { ok: false, error, code };
-  return NextResponse.json(body, { status });
+  return NextResponse.json(body, { status, headers });
 }
